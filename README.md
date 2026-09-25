@@ -271,6 +271,57 @@ Environment variables read by the code: `OPENROUTER_API_KEY`,
 `AI_ENTREP_QUALITY_WEIGHT` and `AI_ENTREP_NOVELTY_WEIGHT` (selection weights),
 `AI_ENTREP_EMBEDDING_DEVICE`, and `AI_ENTREP_MOCK_LLM` (offline tests).
 
+## Running on a Claude subscription (no API key)
+
+A model id of the form `claude-cli/<model>` sends every call through one
+headless `claude -p` invocation of the Claude Code CLI, billed to the Claude
+plan the CLI is logged in with (Pro or Max) instead of an API account
+(`src/llm_backends.py`).  Search logic, prompts, tournaments, fidelity audits,
+the call ledger, embeddings, and records are unchanged.
+
+Setup:
+
+```bash
+claude                                   # once: log in with your Claude subscription, then exit
+unset ANTHROPIC_API_KEY                  # otherwise the CLI bills the API; the targets refuse to run
+python3 -m pip install -r src/requirements.txt
+make check                               # includes the backend's tests against a fake CLI
+make claude-probe                        # 6 real judgments among dreamie, clockchain, my-story
+```
+
+Stages (settings: `CLAUDE_MODEL`, default `claude-sonnet-5`; `CLAUDE_RUN`, the
+run id, default `claude-sonnet5-v1`; `CLAUDE_CONCURRENCY`, default 3):
+
+| Command | What it does | Calls |
+|---|---|---|
+| `make claude-rank-originals` | Stage 0: the evaluator's own double round robin of the 30 originals; writes `<run>-evalrank-30.csv` and the seed set `<run>-firm-set-15.txt` (bottom 15, boundary ties broken head-to-head, highest-ranked seed first) | 870 |
+| `make claude-local` | Tier 1: twelve rounds of local search from the highest-ranked seed | about 500 |
+| `make claude-local-score` | Tier 1: the seed and each round's incumbent against all 30 originals, both orders | up to 780 |
+
+Usage limits pause the run instead of failing it: the backend waits for the
+limit to reset and continues.  Interrupting is always safe, because rerunning the
+same command with the same `CLAUDE_RUN` replays completed calls from the
+ledger.  A logged-out CLI stops the stage.  Keep `CLAUDE_RUN` fixed across reruns
+and change it for a new run.
+
+What stays as in the paper: the prompts and criteria, one stateless call per
+role, both presentation orders, one model for every role, the fidelity auditor
+and its deterministic safeguard, the 30-venture reference set, the seed rule,
+BGE-M3 distances, and the selection settings.  Deviations to report:
+
+- **Evaluator model**: a Claude model instead of DeepSeek V3.2, so the seeds are re-derived (Stage 0).
+- **Temperature and response-token ceiling**: not settable through the CLI; the model defaults apply.  Thinking is disabled (`MAX_THINKING_TOKENS=0`) and effort is `low` (`AI_ENTREP_CLAUDE_EFFORT`).
+- **Context**: Claude Code's agent system prompt is replaced by one neutral line, and tools, MCP servers, skills, and session persistence are off.  The CLI still adds a short environment preamble (working directory, platform, date), identical for every call.
+- **Reply format**: Claude often writes the JSON replies with unescaped quotes inside the analysis or plan text.  Such replies are recovered by cutting each field between the prompt's known keys (`normalize_reply`); well-formed replies pass unchanged, and the ledger keeps the raw text.  In a validation round of local search (42 calls), 2 evaluator replies needed it; none were lost.
+- **Scale**: subscription limits; the stages above are the first tier of the scaled design.
+
+Measured per call with `claude-sonnet-5`: about 3,900 input and 1,150 output
+tokens per judgment; a round of local search takes two to three minutes at a
+concurrency of 4.  Environment variables of this backend:
+`AI_ENTREP_CLAUDE_BIN`, `AI_ENTREP_CLAUDE_EFFORT`, `AI_ENTREP_CLAUDE_TIMEOUT`,
+`AI_ENTREP_CLAUDE_LIMIT_WAIT` and `AI_ENTREP_CLAUDE_RATE_WAIT` (seconds between
+probes after a usage or rate limit).
+
 ## Cross-evaluator robustness checks
 
 `robustness1-gemma3-4b/` and `robustness2-qwen2.5-72b/` re-score the thirty

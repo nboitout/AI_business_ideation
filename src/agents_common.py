@@ -15,6 +15,7 @@ from openai import AsyncOpenAI
 from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 
 import config
+import llm_backends
 from local_search_prompts import (
     EVALUATION_CRITERIA,
     EVALUATOR_PROMPT,
@@ -346,7 +347,7 @@ def _describe_exception(exc: BaseException) -> str:
         if last_exc is not None:
             return _describe_exception(last_exc)
     if isinstance(exc, asyncio.TimeoutError):
-        return f"timed out after {config.API_CALL_TIMEOUT}s"
+        return "timed out"
     message = str(exc).strip()
     return message or exc.__class__.__name__
 
@@ -416,25 +417,34 @@ async def _chat(model: str, prompt: str, role: str = "", context: str = "", temp
             len(cached),
             log_extra,
         )
-        return cached
+        return _normalize_reply(model, role, cached)
 
     _track_chat(role)
-    client.api_key = config.require_openrouter_api_key()
-    kwargs = dict(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=config.MAX_RESPONSE_TOKENS,
-        extra_body={"reasoning": {"effort": config.REASONING_EFFORT}},
-    )
-    if temperature is not None:
-        kwargs["temperature"] = temperature
-    async with _get_semaphore():
-        response = await asyncio.wait_for(
-            client.chat.completions.create(**kwargs),
-            timeout=config.API_CALL_TIMEOUT,
+    served = ""
+    if config.is_claude_cli_model(model):
+        # Subscription usage: no per-call charge is reported.  Temperature and
+        # the response-token ceiling cannot be set through the CLI.
+        outcome = await llm_backends.claude_cli_chat(model, prompt, _get_semaphore())
+        text = outcome.text
+        input_tokens, output_tokens, reported_cost_usd = outcome.input_tokens, outcome.output_tokens, 0.0
+        served = f", served {outcome.served_model}"
+    else:
+        client.api_key = config.require_openrouter_api_key()
+        kwargs = dict(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=config.MAX_RESPONSE_TOKENS,
+            extra_body={"reasoning": {"effort": config.REASONING_EFFORT}},
         )
-    text = response.choices[0].message.content
-    input_tokens, output_tokens, reported_cost_usd = _response_usage(response)
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        async with _get_semaphore():
+            response = await asyncio.wait_for(
+                client.chat.completions.create(**kwargs),
+                timeout=config.API_CALL_TIMEOUT,
+            )
+        text = response.choices[0].message.content
+        input_tokens, output_tokens, reported_cost_usd = _response_usage(response)
     _usage_stats["input_tokens"] += input_tokens
     _usage_stats["output_tokens"] += output_tokens
     _usage_stats["reported_cost_usd"] += reported_cost_usd
@@ -450,8 +460,18 @@ async def _chat(model: str, prompt: str, role: str = "", context: str = "", temp
         output_tokens,
         reported_cost_usd,
     )
-    logger.info("  %s (%s): %s -> OK (%d chars%s)", role, _short_model(model), context, len(text), log_extra)
-    return text
+    logger.info("  %s (%s): %s -> OK (%d chars%s%s)", role, _short_model(model), context, len(text), served, log_extra)
+    return _normalize_reply(model, role, text)
+
+
+def _normalize_reply(model: str, role: str, text: str) -> str:
+    """Recover malformed JSON replies from the claude-cli backend (see llm_backends)."""
+    if not config.is_claude_cli_model(model):
+        return text
+    normalized = llm_backends.normalize_reply(role, text)
+    if normalized != text:
+        logger.info("  %s: malformed JSON reply recovered by key-anchored repair", role)
+    return normalized
 
 
 class FidelityAuditor:

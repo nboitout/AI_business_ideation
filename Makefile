@@ -1,6 +1,7 @@
 .PHONY: help install check dry-run mock-smoke estimate-full check-live \
         run-full run-polish run-baseline run-baseline-entrants run-universe-scoring \
-        run-championship run-baseline-championship run-semantic figures robustness-tests
+        run-championship run-baseline-championship run-semantic figures robustness-tests \
+        claude-check-live claude-probe claude-rank-originals claude-local claude-local-score
 
 # Run id of the searches reported in the paper.  Set RUN_ID=... to reproduce
 # the pipeline under a new id.
@@ -11,6 +12,17 @@ FIRM_SET := in/firm-set-15-evalrank.txt
 STEPS := 12
 CACHE := out/$(RUN_ID)-call-cache.sqlite3
 export PYTHONDONTWRITEBYTECODE := 1
+
+# Claude subscription runs (claude-* targets).  Every call is a headless
+# `claude -p` invocation billed to the logged-in Claude plan; see README.
+# Keep CLAUDE_RUN fixed across reruns: completed calls replay from its ledger.
+CLAUDE_MODEL ?= claude-sonnet-5
+CLAUDE_RUN ?= claude-sonnet5-v1
+CLAUDE_CONCURRENCY ?= 3
+CLAUDE_MODEL_ID := claude-cli/$(CLAUDE_MODEL)
+CLAUDE_SEEDS := out/$(CLAUDE_RUN)-firm-set-15.txt
+CLAUDE_ENV := AI_ENTREP_CALL_CACHE=out/$(CLAUDE_RUN)-call-cache.sqlite3 AI_ENTREP_MAX_CONCURRENT_CALLS=$(CLAUDE_CONCURRENCY)
+CLAUDE_LOCAL_SEED = $(shell grep -v '^\#' $(CLAUDE_SEEDS) 2>/dev/null | head -n 1)
 
 help:
 	@printf '%s\n' \
@@ -34,6 +46,13 @@ help:
 	  '  make run-championship          Final tournament: polished descendants, parents, finals, and the 30 originals' \
 	  '  make run-baseline-championship Same tournament for the local-only finals' \
 	  '  make run-semantic              Semantic distances of the local-only finals and the polished slate (no API calls)' \
+	  '' \
+	  'Claude subscription through the Claude Code CLI (no API key; see README):' \
+	  '  make claude-probe             Six judgments among three originals: checks login, output, and quota use' \
+	  '  make claude-rank-originals    Stage 0: rank the 30 originals with Claude and derive the 15 seeds' \
+	  '  make claude-local             Tier 1: twelve rounds of local search from the top-ranked seed' \
+	  '  make claude-local-score       Tier 1: score the local-search incumbents against the 30 originals' \
+	  '  Settings: CLAUDE_MODEL=$(CLAUDE_MODEL) CLAUDE_RUN=$(CLAUDE_RUN) CLAUDE_CONCURRENCY=$(CLAUDE_CONCURRENCY)' \
 	  '' \
 	  'The README documents every stage, its outputs, and the numbers it supports.'
 
@@ -116,3 +135,40 @@ figures:
 robustness-tests:
 	cd robustness1-gemma3-4b && $(PYTHON) -m unittest -v test_robustness.py
 	cd robustness2-qwen2.5-72b && $(PYTHON) -m unittest -v test_robustness.py
+
+# --- Claude subscription (Claude Code CLI) -----------------------------------
+
+claude-check-live:
+	@command -v claude >/dev/null || { printf '%s\n' 'ERROR: the Claude Code CLI is not on PATH.'; exit 2; }
+	@test -z "$$ANTHROPIC_API_KEY" || { printf '%s\n' 'ERROR: unset ANTHROPIC_API_KEY so that calls bill the subscription, not the API.'; exit 2; }
+
+# Three originals from the top, middle, and bottom of the paper's ranking, both
+# orders: a quick check of login, output parsing, and quota use per judgment.
+claude-probe: claude-check-live
+	@mkdir -p out
+	@printf '%s\n' dreamie clockchain my-story > out/$(CLAUDE_RUN)-probe-firms.txt
+	AI_ENTREP_CALL_CACHE=out/$(CLAUDE_RUN)-probe-call-cache.sqlite3 AI_ENTREP_MAX_CONCURRENT_CALLS=$(CLAUDE_CONCURRENCY) \
+	$(PYTHON) src/rank_originals.py --model $(CLAUDE_MODEL_ID) --firm-set out/$(CLAUDE_RUN)-probe-firms.txt \
+	  --seeds 1 --run-prefix "$(CLAUDE_RUN)-probe" --output-dir out
+
+# Stage 0: the evaluator's own ranking of the 30 originals (870 judgments) and
+# the seed set it implies (bottom 15, boundary ties broken head-to-head).
+claude-rank-originals: claude-check-live
+	$(CLAUDE_ENV) $(PYTHON) src/rank_originals.py --model $(CLAUDE_MODEL_ID) --firm-set in/firm-set-30.txt \
+	  --run-prefix "$(CLAUDE_RUN)" --output-dir out
+
+# Tier 1: local search from the highest-ranked seed (about 500 calls).
+claude-local: claude-check-live
+	@test -s $(CLAUDE_SEEDS) || { printf '%s\n' 'ERROR: run make claude-rank-originals first.'; exit 2; }
+	$(CLAUDE_ENV) AI_ENTREP_SEED_PROJECT_ID=$(CLAUDE_LOCAL_SEED) $(PYTHON) src/local_search.py \
+	  --seed-id $(CLAUDE_LOCAL_SEED) --model $(CLAUDE_MODEL_ID) --steps $(STEPS) \
+	  --input-file in/projects.csv --run-prefix "$(CLAUDE_RUN)" --output-dir out
+
+# Tier 1: the seed and each round's incumbent against all 30 originals, both
+# orders (60 judgments per distinct text; up to 780 in total).
+claude-local-score: claude-check-live
+	@test -s out/$(CLAUDE_RUN)-local-search.csv || { printf '%s\n' 'ERROR: run make claude-local first.'; exit 2; }
+	$(CLAUDE_ENV) AI_ENTREP_EXPECTED_FIRM_COUNT=30 AI_ENTREP_SEED_PROJECT_ID=$(CLAUDE_LOCAL_SEED) \
+	$(PYTHON) src/common_quality.py --local-csv out/$(CLAUDE_RUN)-local-search.csv \
+	  --firm-set in/firm-set-30.txt --model $(CLAUDE_MODEL_ID) --run-prefix "$(CLAUDE_RUN)-universe" \
+	  --input-file in/projects.csv --output-dir out --scope frontier

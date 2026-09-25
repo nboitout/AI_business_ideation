@@ -27,6 +27,7 @@ sys.dont_write_bytecode = True
 
 import config
 import estimate_cost
+import llm_backends
 from global_search_prompts import CROSSOVER_PROMPT, MUTATOR_PROMPT
 from local_search_prompts import (
     EVALUATION_CRITERIA,
@@ -57,7 +58,7 @@ def parse_args() -> argparse.Namespace:
         "--max-concurrent-calls",
         type=int,
         default=40,
-        help="Maximum parallel OpenRouter calls used by LLM stages.",
+        help="Maximum parallel model calls used by LLM stages.",
     )
     parser.add_argument(
         "--seed-id",
@@ -157,7 +158,7 @@ def cache_usage(path: Path, model: str) -> dict[str, int | float]:
     ).fetchone()
     connection.close()
     count, input_tokens, output_tokens, reported_cost = row
-    prices = estimate_cost.MODEL_PRICES[model]
+    prices = estimate_cost.model_prices(model)
     token_estimate = (
         float(input_tokens) / 1_000_000 * prices["input"]
         + float(output_tokens) / 1_000_000 * prices["output"]
@@ -281,7 +282,7 @@ def main() -> None:
         common_quality=(args.quality_calibration == "seed-benchmark"),
         common_quality_scope=args.quality_scope,
     )
-    prices = estimate_cost.MODEL_PRICES[args.model]
+    prices = estimate_cost.model_prices(args.model)
     estimated_cost = cost_inputs_m * prices["input"] + cost_outputs_m * prices["output"]
 
     local_outputs = search_outputs(output_dir, run_id, "local")
@@ -310,14 +311,34 @@ def main() -> None:
             if args.dry_run
             else "offline_mock"
             if args.mock
+            else "live_claude_cli"
+            if config.is_claude_cli_model(args.model)
             else "live_openrouter"
         ),
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "working_directory": str(Path.cwd()),
         "git_commit": current_git_commit(),
         "model": args.model,
-        "provider": "OpenRouter",
-        "api_base_url": config.OPENROUTER_BASE_URL,
+        **(
+            {
+                "provider": "Claude subscription via the Claude Code CLI (claude -p)",
+                "claude_cli": {
+                    "command": llm_backends.claude_cli_command(args.model),
+                    "reply_repair": (
+                        "malformed JSON replies are recovered by cutting each field between the "
+                        "prompt's known keys (llm_backends.normalize_reply); the ledger keeps the raw text"
+                    ),
+                    "reply_fields": llm_backends.ROLE_SCHEMAS,
+                    "system_prompt": config.CLAUDE_CLI_SYSTEM_PROMPT,
+                    "effort": config.CLAUDE_CLI_EFFORT,
+                    "thinking": "disabled (MAX_THINKING_TOKENS=0)",
+                    "temperature": "not settable through the CLI; model default",
+                    "max_response_tokens": "not settable through the CLI",
+                },
+            }
+            if config.is_claude_cli_model(args.model)
+            else {"provider": "OpenRouter", "api_base_url": config.OPENROUTER_BASE_URL}
+        ),
         "input_file": args.input_file,
         "firm_set": args.firm_set,
         "firm_ids": firm_ids,
@@ -360,7 +381,7 @@ def main() -> None:
                 "input": round(cost_inputs_m, 3),
                 "output": round(cost_outputs_m, 3),
             },
-            "price_usd_per_million_tokens": estimate_cost.MODEL_PRICES[args.model],
+            "price_usd_per_million_tokens": estimate_cost.model_prices(args.model),
             "price_snapshot_date": estimate_cost.PRICE_SNAPSHOT_DATE,
             "price_source": estimate_cost.MODEL_PRICE_SOURCES.get(args.model, ""),
         },

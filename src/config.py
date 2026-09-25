@@ -47,6 +47,55 @@ def require_openrouter_api_key() -> str:
         )
     return OPENROUTER_API_KEY
 
+
+# --- Provider (Claude subscription through the Claude Code CLI) --------------
+
+# A model id of the form "claude-cli/<model>" (for example
+# "claude-cli/claude-sonnet-5") routes every call through one headless
+# `claude -p` invocation instead of OpenRouter.  The CLI bills the Claude
+# subscription it is logged in with (Pro or Max), not an API account.  See
+# src/llm_backends.py.
+CLAUDE_CLI_PREFIX = "claude-cli/"
+CLAUDE_CLI_BIN = os.environ.get("AI_ENTREP_CLAUDE_BIN", "claude")
+CLAUDE_CLI_EFFORT = os.environ.get("AI_ENTREP_CLAUDE_EFFORT", "low")
+CLAUDE_CLI_TIMEOUT = _env_int("AI_ENTREP_CLAUDE_TIMEOUT", 300)
+# Seconds to wait before probing again after a usage limit whose reset time
+# the CLI did not report, and after a transient rate limit or overload.
+CLAUDE_CLI_LIMIT_WAIT = _env_int("AI_ENTREP_CLAUDE_LIMIT_WAIT", 900)
+CLAUDE_CLI_RATE_WAIT = _env_int("AI_ENTREP_CLAUDE_RATE_WAIT", 60)
+# Replaces Claude Code's agent system prompt so that each call is a plain
+# completion of the paper's prompt, as the OpenRouter calls were.
+CLAUDE_CLI_SYSTEM_PROMPT = "Follow the user's instructions exactly."
+
+
+def is_claude_cli_model(model: str) -> bool:
+    return model.startswith(CLAUDE_CLI_PREFIX)
+
+
+def claude_cli_model_name(model: str) -> str:
+    """Return the model name passed to `claude --model`."""
+    return model[len(CLAUDE_CLI_PREFIX):]
+
+
+def require_live_backend(model: str) -> None:
+    """Fail fast when the backend that `model` selects cannot make live calls."""
+    if not is_claude_cli_model(model):
+        require_openrouter_api_key()
+        return
+    import shutil
+
+    if not claude_cli_model_name(model):
+        raise RuntimeError(f"model {model!r} names no Claude model after {CLAUDE_CLI_PREFIX!r}")
+    if shutil.which(CLAUDE_CLI_BIN) is None:
+        raise RuntimeError(
+            f"the Claude Code CLI ({CLAUDE_CLI_BIN!r}) is not on PATH; install it and run `claude` once to log in."
+        )
+    if os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("AI_ENTREP_ALLOW_ANTHROPIC_API_KEY") != "1":
+        raise RuntimeError(
+            "ANTHROPIC_API_KEY is set, so the Claude CLI would bill the API account instead of "
+            "the subscription.  Unset it, or set AI_ENTREP_ALLOW_ANTHROPIC_API_KEY=1 to proceed anyway."
+        )
+
 # --- Shared agents (used by both local and global search) --------------------
 
 BASE_MODEL = os.environ.get("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL)  # Shared default model for all agents

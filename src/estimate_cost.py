@@ -9,11 +9,20 @@ call counts are documented in the README.
 
 import argparse
 
+import config
+
 
 MODEL_PRICES = {
     "deepseek/deepseek-v3.2": {"input": 0.2072, "output": 0.3108},
 }
 PRICE_SNAPSHOT_DATE = "2026-08-06"
+def model_prices(model: str) -> dict[str, float]:
+    """Token prices in USD per million; subscription (claude-cli) calls carry no per-call charge."""
+    if config.is_claude_cli_model(model):
+        return {"input": 0.0, "output": 0.0}
+    return MODEL_PRICES[model]
+
+
 MODEL_PRICE_SOURCES = {
     "deepseek/deepseek-v3.2": "https://openrouter.ai/deepseek/deepseek-v3.2/pricing",
 }

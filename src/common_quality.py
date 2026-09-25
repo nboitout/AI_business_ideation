@@ -56,9 +56,9 @@ logger = logging.getLogger(__name__)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Score selected plans against one seed benchmark set.")
     parser.add_argument("--local-csv", required=True, help="Local-search CSV to calibrate.")
-    parser.add_argument("--global-csv", required=True, help="Global-search CSV to calibrate.")
+    parser.add_argument("--global-csv", default=None, help="Global-search CSV to calibrate (omit to score local search only).")
     parser.add_argument("--firm-set", required=True, help="Text file with benchmark seed ids, one per line.")
-    parser.add_argument("--model", default=config.DEFAULT_OPENROUTER_MODEL, help="OpenRouter model for evaluator calls.")
+    parser.add_argument("--model", default=config.DEFAULT_OPENROUTER_MODEL, help="Evaluator model: an OpenRouter id, or claude-cli/<model> for the Claude subscription.")
     parser.add_argument("--run-prefix", default=None, help="Run label used in logs.")
     parser.add_argument("--input-file", default=config.INPUT_FILE, help="Seed-project CSV path.")
     parser.add_argument("--output-dir", required=True, help="Directory for common-quality result files.")
@@ -109,7 +109,7 @@ def lineage_mentions_any(plan_id: str, firm_ids: list[str]) -> bool:
     return any(firm_id in tokens for firm_id in firm_ids)
 
 
-def collect_unique_concepts(local_csv: str, global_csv: str, firm_ids: list[str], scope: str) -> list[dict[str, str | int]]:
+def collect_unique_concepts(local_csv: str, global_csv: str | None, firm_ids: list[str], scope: str) -> list[dict[str, str | int]]:
     concepts_by_key: dict[str, dict[str, str | int]] = {}
 
     def add_concept(text: str) -> None:
@@ -137,6 +137,9 @@ def collect_unique_concepts(local_csv: str, global_csv: str, firm_ids: list[str]
                 winner_key = row.get("winner", "")
                 if re.fullmatch(r"plan_\d+", winner_key or ""):
                     add_concept(row.get(winner_key, ""))
+
+    if global_csv is None:
+        return list(concepts_by_key.values())
 
     with open(global_csv, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
@@ -317,7 +320,7 @@ async def score_matches(
 async def main(args: argparse.Namespace) -> None:
     config.set_all_agent_models(args.model)
     if not config.MOCK_LLM:
-        config.require_openrouter_api_key()
+        config.require_live_backend(config.EVALUATOR_MODEL)
 
     t0 = time.time()
     run_prefix = args.run_prefix or datetime.now().strftime("%Y-%m-%d_%H%M%S")

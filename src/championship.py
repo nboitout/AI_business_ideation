@@ -107,7 +107,7 @@ async def main() -> None:
     if args.model:
         config.set_all_agent_models(args.model)
     if not config.MOCK_LLM:
-        config.require_openrouter_api_key()
+        config.require_live_backend(config.EVALUATOR_MODEL)
 
     t0 = time.time()
     os.makedirs(args.output_dir, exist_ok=True)
