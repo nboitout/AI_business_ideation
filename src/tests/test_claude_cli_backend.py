@@ -31,12 +31,12 @@ FAKE_CLAUDE = textwrap.dedent(
     log = os.environ["FAKE_CLAUDE_LOG"]
     calls = []
     if os.path.exists(log):
-        calls = json.load(open(log))
+        calls = json.load(open(log, encoding="utf-8"))
     calls.append({"argv": sys.argv[1:], "cwd": os.getcwd(), "prompt": prompt,
                   "cwd_entries": os.listdir("."),
                   "max_thinking_tokens": os.environ.get("MAX_THINKING_TOKENS")})
-    json.dump(calls, open(log, "w"))
-    script = json.load(open(os.environ["FAKE_CLAUDE_SCRIPT"]))
+    json.dump(calls, open(log, "w", encoding="utf-8"))
+    script = json.load(open(os.environ["FAKE_CLAUDE_SCRIPT"], encoding="utf-8"))
     step = script[min(len(calls), len(script)) - 1]
     if step["kind"] == "crash":
         sys.stderr.write(step["message"])
@@ -61,9 +61,15 @@ class ClaudeCliBackendTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         tmp = Path(self.tmp.name)
-        self.fake = tmp / "claude"
-        self.fake.write_text(FAKE_CLAUDE)
-        self.fake.chmod(self.fake.stat().st_mode | stat.S_IEXEC)
+        script = tmp / "fake_claude.py"
+        script.write_text(FAKE_CLAUDE, encoding="utf-8")
+        if os.name == "nt":
+            # Windows runs the CLI as claude.cmd or claude.exe, not a script.
+            self.fake = tmp / "claude.cmd"
+            self.fake.write_text(f'@"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
+        else:
+            self.fake = script
+            self.fake.chmod(self.fake.stat().st_mode | stat.S_IEXEC)
         self.log = tmp / "calls.json"
         self.script = tmp / "script.json"
         self.env = patch.dict(os.environ, {
@@ -93,10 +99,10 @@ class ClaudeCliBackendTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def script_responses(self, *steps):
-        self.script.write_text(json.dumps([{"kind": kind, "message": message} for kind, message in steps]))
+        self.script.write_text(json.dumps([{"kind": kind, "message": message} for kind, message in steps]), encoding="utf-8")
 
     def calls(self):
-        return json.loads(self.log.read_text()) if self.log.exists() else []
+        return json.loads(self.log.read_text(encoding="utf-8")) if self.log.exists() else []
 
     def chat(self, prompt="Compare A and B."):
         return asyncio.run(llm_backends.claude_cli_chat(MODEL, prompt, asyncio.Semaphore(2)))

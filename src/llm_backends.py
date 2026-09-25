@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import tempfile
 import time
 
@@ -121,8 +122,10 @@ def _empty_workdir() -> str:
 
 
 def claude_cli_command(model: str) -> list[str]:
+    # The full path: on Windows the CLI is claude.cmd or claude.exe, which a
+    # subprocess does not find from the bare name.
     return [
-        config.CLAUDE_CLI_BIN,
+        shutil.which(config.CLAUDE_CLI_BIN) or config.CLAUDE_CLI_BIN,
         "-p",
         "--model", config.claude_cli_model_name(model),
         "--output-format", "json",

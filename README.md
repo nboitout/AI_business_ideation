@@ -279,30 +279,37 @@ plan the CLI is logged in with (Pro or Max) instead of an API account
 (`src/llm_backends.py`).  Search logic, prompts, tournaments, fidelity audits,
 the call ledger, embeddings, and records are unchanged.
 
-Setup:
+The stages run through `src/claude_stages.py`, which works on Windows, macOS,
+and Linux (the Makefile's `claude-*` targets call it).  Windows PowerShell:
 
-```bash
+```powershell
 claude                                   # once: log in with your Claude subscription, then exit
-unset ANTHROPIC_API_KEY                  # otherwise the CLI bills the API; the targets refuse to run
-python3 -m pip install -r src/requirements.txt
-make check                               # includes the backend's tests against a fake CLI
-make claude-probe                        # 6 real judgments among dreamie, clockchain, my-story
+Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue   # otherwise the CLI bills the API
+py -m pip install openai==1.69.0 tenacity==8.4.1                  # enough for Tier 1
+py src/claude_stages.py check            # offline tests, including the backend against a fake CLI
+py src/claude_stages.py probe            # 6 real judgments among dreamie, clockchain, my-story
 ```
 
-Stages (settings: `CLAUDE_MODEL`, default `claude-sonnet-5`; `CLAUDE_RUN`, the
-run id, default `claude-sonnet5-v1`; `CLAUDE_CONCURRENCY`, default 3):
+macOS and Linux: the same with `python3` in place of `py`, `unset
+ANTHROPIC_API_KEY`, or `make claude-probe` and the other `claude-*` targets.
+The full `src/requirements.txt` (with PyTorch and the embedding model) is needed
+only for semantic distances, which Tier 1 does not compute.
 
-| Command | What it does | Calls |
+| Stage | What it does | Calls |
 |---|---|---|
-| `make claude-rank-originals` | Stage 0: the evaluator's own double round robin of the 30 originals; writes `<run>-evalrank-30.csv` and the seed set `<run>-firm-set-15.txt` (bottom 15, boundary ties broken head-to-head, highest-ranked seed first) | 870 |
-| `make claude-local` | Tier 1: twelve rounds of local search from the highest-ranked seed | about 500 |
-| `make claude-local-score` | Tier 1: the seed and each round's incumbent against all 30 originals, both orders | up to 780 |
+| `rank-originals` | Stage 0: the evaluator's own double round robin of the 30 originals; writes `<run>-evalrank-30.csv` and the seed set `<run>-firm-set-15.txt` (bottom 15, boundary ties broken head-to-head, highest-ranked seed first) | 870 |
+| `local` | Tier 1: twelve rounds of local search from the highest-ranked seed | about 500 |
+| `local-score` | Tier 1: the seed and each round's incumbent against all 30 originals, both orders | up to 780 |
+
+Options: `--model` (default `claude-sonnet-5`), `--run` (the run id, default
+`claude-sonnet5-v1`), `--concurrency` (default 3), `--steps` (default 12); the
+Makefile names them `CLAUDE_MODEL`, `CLAUDE_RUN`, and `CLAUDE_CONCURRENCY`.
 
 Usage limits pause the run instead of failing it: the backend waits for the
 limit to reset and continues.  Interrupting is always safe, because rerunning the
-same command with the same `CLAUDE_RUN` replays completed calls from the
-ledger.  A logged-out CLI stops the stage.  Keep `CLAUDE_RUN` fixed across reruns
-and change it for a new run.
+same command with the same run id replays completed calls from the ledger.
+A logged-out CLI stops the stage.  Keep the run id fixed across reruns and
+change it for a new run.
 
 What stays as in the paper: the prompts and criteria, one stateless call per
 role, both presentation orders, one model for every role, the fidelity auditor
