@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import os
@@ -46,6 +46,13 @@ AUTH_PATTERN = re.compile(
     re.IGNORECASE,
 )
 RESET_EPOCH_PATTERN = re.compile(r"\|(\d{10})\b")
+# "resets 11:10pm (Europe/Bucharest)", "resets Sep 27, 3pm (Europe/Paris)"
+RESET_CLOCK_PATTERN = re.compile(
+    r"resets\s+(?:(?P<month>[A-Z][a-z]{2})[a-z]*\.?\s+(?P<day>\d{1,2}),?\s+(?:at\s+)?)?"
+    r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>am|pm)\b(?:\s*\((?P<tz>[^)]+)\))?",
+    re.IGNORECASE,
+)
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
 
 
 def _object(properties: dict, required: list[str] | None = None) -> dict:
@@ -145,13 +152,53 @@ def _child_env() -> dict[str, str]:
     return env
 
 
+def _time_zone(name: str | None):
+    """The named zone, or the machine's local zone when it cannot be resolved
+    (Windows has no zone database unless the tzdata package is installed)."""
+    if name:
+        try:
+            from zoneinfo import ZoneInfo
+
+            return ZoneInfo(name.strip())
+        except Exception:
+            pass
+    return datetime.now().astimezone().tzinfo
+
+
+def parse_reset_time(message: str, now: datetime | None = None) -> float | None:
+    """Epoch seconds of the reset a usage-limit message announces, if any."""
+    match = RESET_EPOCH_PATTERN.search(message)
+    if match:
+        return float(match.group(1))
+    match = RESET_CLOCK_PATTERN.search(message)
+    if match is None:
+        return None
+    zone = _time_zone(match.group("tz"))
+    now = (now or datetime.now(timezone.utc)).astimezone(zone)
+    hour = int(match.group("hour")) % 12 + (12 if match.group("ampm").lower() == "pm" else 0)
+    minute = int(match.group("minute") or 0)
+    if match.group("month"):
+        month = _MONTHS.index(match.group("month")[:3].lower()) + 1
+        reset = now.replace(month=month, day=int(match.group("day")), hour=hour, minute=minute, second=0, microsecond=0)
+        if reset < now - timedelta(days=1):
+            reset = reset.replace(year=reset.year + 1)
+    else:
+        reset = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if reset <= now:
+            reset += timedelta(days=1)
+    delay = (reset - now).total_seconds()
+    if not 0 <= delay <= 8 * 24 * 3600:
+        return None
+    return reset.timestamp()
+
+
 def classify_failure(message: str, api_status: object = None) -> CliOutcome:
     """Sort a failed call into quota, rate, auth, or other error."""
     if AUTH_PATTERN.search(message) or api_status in (401, 403):
         return CliOutcome("auth", text=message)
     if QUOTA_PATTERN.search(message):
-        match = RESET_EPOCH_PATTERN.search(message)
-        resume_at = float(match.group(1)) + 30 if match else None
+        reset = parse_reset_time(message)
+        resume_at = reset + 60 if reset is not None else None
         return CliOutcome("quota", text=message, resume_at=resume_at)
     if RATE_PATTERN.search(message) or api_status in (429, 529):
         return CliOutcome("rate", text=message)
@@ -283,8 +330,8 @@ def _pause(outcome: CliOutcome) -> None:
     _paused_until = resume_at
     label = "Claude usage limit reached" if outcome.kind == "quota" else "Claude rate limit or overload"
     logger.warning(
-        "%s (%s); pausing until %s. Interrupting is safe: rerun the same command "
-        "and completed calls replay from the ledger.",
+        "%s (%s); pausing until %s, then continuing by itself. Interrupting (Ctrl+C) is "
+        "also safe: rerun the same command and completed calls replay from the ledger.",
         label,
         outcome.text.strip()[:200],
         datetime.fromtimestamp(resume_at).strftime("%Y-%m-%d %H:%M:%S"),

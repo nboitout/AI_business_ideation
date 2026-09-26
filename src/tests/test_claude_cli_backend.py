@@ -1,6 +1,7 @@
 """The claude-cli backend, exercised against a fake `claude` executable."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,16 @@ from agents_common import Evaluator, _chat
 from rank_originals import order_with_tie_breaks
 
 MODEL = "claude-cli/claude-sonnet-5"
+
+
+def _has_zone(name: str) -> bool:
+    try:
+        from zoneinfo import ZoneInfo
+
+        ZoneInfo(name)
+        return True
+    except Exception:
+        return False
 
 # Replays the scripted responses in $FAKE_CLAUDE_SCRIPT (one per invocation,
 # the last one repeating) and records each invocation in $FAKE_CLAUDE_LOG.
@@ -149,7 +160,7 @@ class ClaudeCliBackendTest(unittest.TestCase):
     def test_reset_epoch_in_message_sets_resume_time(self):
         outcome = llm_backends.classify_failure("Claude AI usage limit reached|1750000000")
         self.assertEqual(outcome.kind, "quota")
-        self.assertEqual(outcome.resume_at, 1750000030.0)
+        self.assertEqual(outcome.resume_at, 1750000060.0)
         self.assertEqual(llm_backends.classify_failure("overloaded", 529).kind, "rate")
 
     def test_authentication_failure_stops_the_process(self):
@@ -215,6 +226,36 @@ class ReplyRepairTest(unittest.TestCase):
     def test_unrecoverable_replies_are_left_to_fail_as_before(self):
         for text in ('{"analysis": "no verdict"}', '{"analysis": "x "y"", "winner": "C"}', "no json at all"):
             self.assertEqual(llm_backends.normalize_reply("Evaluator", text), text)
+
+
+class ResetTimeTest(unittest.TestCase):
+    NOW = datetime(2026, 9, 25, 17, 22, 26, tzinfo=timezone.utc)
+
+    def test_epoch_and_unparseable_messages(self):
+        self.assertEqual(llm_backends.parse_reset_time("Claude AI usage limit reached|1790000000"), 1790000000.0)
+        self.assertIsNone(llm_backends.parse_reset_time("usage limit reached"))
+
+    @unittest.skipUnless(_has_zone("Europe/Bucharest"), "no time-zone database (install tzdata)")
+    def test_clock_time_in_the_named_zone(self):
+        # The message from a real session limit: 20:22 in Bucharest, reset at 23:10.
+        message = "You've hit your session limit · resets 11:10pm (Europe/Bucharest)"
+        reset = llm_backends.parse_reset_time(message, self.NOW)
+        self.assertEqual(datetime.fromtimestamp(reset, timezone.utc), datetime(2026, 9, 25, 20, 10, tzinfo=timezone.utc))
+        outcome = llm_backends.classify_failure(message)
+        self.assertEqual(outcome.kind, "quota")
+        self.assertIsNotNone(outcome.resume_at)
+
+    @unittest.skipUnless(_has_zone("Europe/Paris"), "no time-zone database (install tzdata)")
+    def test_dated_weekly_reset(self):
+        reset = llm_backends.parse_reset_time("Weekly limit · resets Sep 29, 3pm (Europe/Paris)", self.NOW)
+        self.assertEqual(datetime.fromtimestamp(reset, timezone.utc), datetime(2026, 9, 29, 13, 0, tzinfo=timezone.utc))
+
+    def test_time_already_past_today_means_tomorrow(self):
+        now = datetime.now().astimezone()
+        earlier = (now - timedelta(hours=1)).replace(minute=0)
+        label = f"{earlier.hour % 12 or 12}{'pm' if earlier.hour >= 12 else 'am'}"
+        reset = llm_backends.parse_reset_time(f"resets {label}", now)
+        self.assertTrue(now.timestamp() < reset <= now.timestamp() + 24 * 3600)
 
 
 class SeedBoundaryTieBreakTest(unittest.TestCase):

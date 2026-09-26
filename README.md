@@ -288,6 +288,7 @@ Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue   # otherwise th
 py -m pip install openai==1.69.0 tenacity==8.4.1                  # enough for Tier 1
 py src/claude_stages.py check            # offline tests, including the backend against a fake CLI
 py src/claude_stages.py probe            # 6 real judgments among dreamie, clockchain, my-story
+py src/claude_stages.py status           # progress of the run, no calls
 ```
 
 macOS and Linux: the same with `python3` in place of `py`, `unset
@@ -305,11 +306,13 @@ Options: `--model` (default `claude-sonnet-5`), `--run` (the run id, default
 `claude-sonnet5-v1`), `--concurrency` (default 3), `--steps` (default 12); the
 Makefile names them `CLAUDE_MODEL`, `CLAUDE_RUN`, and `CLAUDE_CONCURRENCY`.
 
-Usage limits pause the run instead of failing it: the backend waits for the
-limit to reset and continues.  Interrupting is always safe, because rerunning the
-same command with the same run id replays completed calls from the ledger.
-A logged-out CLI stops the stage.  Keep the run id fixed across reruns and
-change it for a new run.
+Usage limits pause the run instead of failing it: the backend reads the reset
+time from the CLI's message (for example `resets 11:10pm (Europe/Bucharest)`),
+sleeps until then, and continues by itself.  Interrupting with Ctrl+C is always
+safe, because rerunning the same command with the same run id replays completed
+calls from the ledger.  `status` shows a run's saved calls and finished stages
+without making any call.  A logged-out CLI stops the stage.  Keep the run id
+fixed across reruns and change it for a new run.
 
 What stays as in the paper: the prompts and criteria, one stateless call per
 role, both presentation orders, one model for every role, the fidelity auditor

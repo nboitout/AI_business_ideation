@@ -115,7 +115,8 @@ async def main() -> None:
     t0 = time.time()
     os.makedirs(args.output_dir, exist_ok=True)
     prefix = os.path.join(args.output_dir, args.run_prefix)
-    handler = logging.FileHandler(f"{prefix}-evalrank.log", mode="w")
+    # Appended, so that the log of an interrupted and resumed run stays whole.
+    handler = logging.FileHandler(f"{prefix}-evalrank.log", mode="a")
     handler.setFormatter(logging.Formatter(LOG_FORMAT))
     logging.getLogger().addHandler(handler)
 
