@@ -70,16 +70,37 @@ def head_to_head(group: list[int], match_details: dict) -> dict[int, float]:
     return {k: wins[k] for k in group}
 
 
+def sonneborn_berger(group: list[int], win_rates: list[float], match_details: dict) -> dict[int, float]:
+    """Each member's points over all its matches, weighted by the opponent's win rate.
+
+    The standard round-robin tie-break (chess): among equal scores, wins over
+    stronger opponents count for more.  It uses the existing judgments only.
+    """
+    members = set(group)
+    score: dict[int, float] = defaultdict(float)
+    for (i, j), (winner_label, _analysis) in match_details.items():
+        points_i = 1.0 if winner_label == f"plan_{i}" else 0.0 if winner_label == f"plan_{j}" else 0.5
+        if i in members:
+            score[i] += points_i * win_rates[j]
+        if j in members:
+            score[j] += (1.0 - points_i) * win_rates[i]
+    return {k: score[k] for k in group}
+
+
 def order_with_tie_breaks(
     ids: list[str],
     win_rates: list[float],
     match_details: dict,
     boundary: int,
 ) -> tuple[list[int], dict[int, str], bool]:
-    """Order by win rate; break equal win rates head-to-head, then by id.
+    """Order by win rate; break equal win rates head-to-head, then by
+    Sonneborn-Berger score, then by id.
 
-    Returns the order, a note per index, and whether a tie across the seed
-    boundary (between rank `boundary` and `boundary + 1`) remained unresolved.
+    The paper breaks ties at the seed boundary head-to-head and specifies
+    nothing further; Sonneborn-Berger resolves ties the head-to-head leaves
+    (for example a three-way cycle) without any new judgment.  Returns the
+    order, a note per index, and whether a tie across the seed boundary
+    (between rank `boundary` and `boundary + 1`) remained unresolved.
     """
     groups: dict[float, list[int]] = defaultdict(list)
     for idx, rate in enumerate(win_rates):
@@ -93,13 +114,18 @@ def order_with_tie_breaks(
         start = len(order)
         if len(group) > 1:
             h2h = head_to_head(group, match_details)
-            group = sorted(group, key=lambda k: (-h2h[k], ids[k]))
+            sb = {k: round(v, 9) for k, v in sonneborn_berger(group, win_rates, match_details).items()}
+            group = sorted(group, key=lambda k: (-h2h[k], -sb[k], ids[k]))
             crosses = start < boundary < start + len(group)
             summary = ", ".join(f"{ids[k]} {h2h[k]:g}" for k in group)
             note = f"tied at {rate:.4f}; head-to-head wins among the tied: {summary}"
-            if crosses and h2h[group[boundary - start - 1]] == h2h[group[boundary - start]]:
-                unresolved_boundary = True
-                note += "; UNRESOLVED at the seed boundary, broken by id"
+            if len(set(h2h.values())) < len(group):
+                note += "; Sonneborn-Berger: " + ", ".join(f"{ids[k]} {sb[k]:.4f}" for k in group)
+            if crosses:
+                above, below = group[boundary - start - 1], group[boundary - start]
+                if (h2h[above], sb[above]) == (h2h[below], sb[below]):
+                    unresolved_boundary = True
+                    note += "; UNRESOLVED at the seed boundary, broken by id"
             for k in group:
                 notes[k] = note
         order.extend(group)

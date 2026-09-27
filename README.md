@@ -320,6 +320,7 @@ and its deterministic safeguard, the 30-venture reference set, the seed rule,
 BGE-M3 distances, and the selection settings.  Deviations to report:
 
 - **Evaluator model**: a Claude model instead of DeepSeek V3.2, so the seeds are re-derived (Stage 0).
+- **Seed-boundary ties**: as in the paper, broken head-to-head; a tie the head-to-head leaves (for example a three-way cycle) is broken by Sonneborn-Berger score, each venture's wins weighted by its opponents' win rates, from the existing judgments.  The paper specifies no rule for that case.
 - **Temperature and response-token ceiling**: not settable through the CLI; the model defaults apply.  Thinking is disabled (`MAX_THINKING_TOKENS=0`) and effort is `low` (`AI_ENTREP_CLAUDE_EFFORT`).
 - **Context**: Claude Code's agent system prompt is replaced by one neutral line, and tools, MCP servers, skills, and session persistence are off.  The CLI still adds a short environment preamble (working directory, platform, date), identical for every call.
 - **Reply format**: Claude often writes the JSON replies with unescaped quotes inside the analysis or plan text.  Such replies are recovered by cutting each field between the prompt's known keys (`normalize_reply`); well-formed replies pass unchanged, and the ledger keeps the raw text.  In a validation round of local search (42 calls), 2 evaluator replies needed it; none were lost.

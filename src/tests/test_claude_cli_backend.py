@@ -270,6 +270,25 @@ class SeedBoundaryTieBreakTest(unittest.TestCase):
         self.assertFalse(unresolved)
         self.assertIn("soloist 2", notes[1])
 
+    def test_three_way_cycle_is_broken_by_sonneborn_berger(self):
+        # b, c, d tie on win rate and split their head-to-heads 2-2-2 (as
+        # clockchain, lockguard, and remotion-ai did); d's other win came
+        # against the strongest venture, a, so d ranks first among them.
+        ids = ["a", "b", "c", "d", "e"]
+        rates = [0.75, 0.5, 0.5, 0.5, 0.25]
+        details = {
+            (1, 2): ("plan_1", ""), (2, 1): ("plan_1", ""),   # b beats c twice
+            (2, 3): ("plan_2", ""), (3, 2): ("plan_2", ""),   # c beats d twice
+            (3, 1): ("plan_3", ""), (1, 3): ("plan_3", ""),   # d beats b twice
+            (3, 0): ("plan_3", ""), (0, 3): ("plan_0", ""),   # d splits with strong a
+            (1, 4): ("plan_1", ""), (4, 1): ("plan_4", ""),   # b splits with weak e
+            (2, 4): ("plan_2", ""), (4, 2): ("plan_4", ""),   # c splits with weak e
+        }
+        order, notes, unresolved = order_with_tie_breaks(ids, rates, details, boundary=2)
+        self.assertEqual([ids[i] for i in order][1:4], ["d", "b", "c"])
+        self.assertFalse(unresolved)
+        self.assertIn("Sonneborn-Berger", notes[3])
+
     def test_unresolved_boundary_tie_is_flagged(self):
         ids = ["a", "b", "c", "d"]
         details = {(1, 2): ("plan_1", ""), (2, 1): ("plan_1", "")}
